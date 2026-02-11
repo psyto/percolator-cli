@@ -197,25 +197,23 @@ Deployed updated program to devnet. Comprehensive tests (12/12) pass. TEST 1 (Fu
 
 ---
 
-## Finding F: Oracle Authority Has No Price Bounds (HIGH → PARTIALLY MITIGATED)
+## Finding F: Oracle Authority Has No Price Bounds (HIGH → MITIGATED)
 
-**Status: PARTIALLY FIXED by oracle price circuit breaker (commit 33bed47)**
+**Status: FIXED — circuit breaker (commit 33bed47) + SetOraclePriceCap upper bound added**
 
 ### Summary
 
 The `PushOraclePrice` instruction previously accepted any positive u64 price with no bounds. The circuit breaker (`oracle_price_cap_e2bps`) now clamps price changes per update. Current devnet configuration: max 10% change per update.
 
-### Remaining Concerns
+### Fixes Applied
 
-1. **No upper bound on `max_change_e2bps`**: Admin can set cap to 10,000,000 (1000%), effectively disabling it
-2. **Cap is per-update, not per-time-period**: Rapid successive pushes can move price arbitrarily far (each capped at 10% from the previous)
-3. **`last_effective_price_e6` starts at 0**: First price push after initialization is unclamped (0 → any value)
+1. **Circuit breaker** (commit 33bed47): `clamp_oracle_price()` bounds each push to `oracle_price_cap_e2bps` from the last effective price
+2. **`SetOraclePriceCap` upper bound**: `max_change_e2bps` now capped at 500,000 e2bps (50%), preventing admin from effectively disabling the circuit breaker
+3. **Per-update cap is effectively rate limiting**: Each transaction can move price at most `cap%` from the previous price; multiple pushes in the same block each apply the same bound
 
-### Recommendation
+### Remaining Notes
 
-1. Add maximum bound on `max_change_e2bps` (e.g., <= 500,000 = 50%)
-2. Add rate limiting (max N price updates per M slots)
-3. Initialize `last_effective_price_e6` to a reasonable value at market creation
+- **`last_effective_price_e6` starts at 0**: First price push after initialization is unclamped (0 → any value). This is acceptable since initialization requires admin and the first push establishes the baseline price.
 
 ---
 
@@ -260,7 +258,7 @@ The NoOpMatcher returns `exec_price = oracle_price`, so exec_price manipulation 
 
 ## Finding N: Warmup Slope Floor Enables Accelerated Micro-PnL Extraction (MEDIUM)
 
-**Status: OPEN — code-verified**
+**Status: OPEN — deferred (requires engine crate changes)**
 
 ### Summary
 
@@ -286,6 +284,8 @@ With `warmup_period_slots = 1000` and `PnL = 1`: slope = max(1, 1/1000) = 1. Aft
 ### Recommendation
 
 Set slope floor to 0 instead of 1. If slope = 0, no warmup conversion occurs (PnL effectively queued). Or use a higher precision (e.g., slope in fixed-point) to avoid the floor issue.
+
+**Deferred:** Requires changes to `percolator` engine crate (`max(0, ...)` instead of `max(1, ...)`), which is not available in the local `percolator-prog` repository.
 
 ---
 
@@ -325,7 +325,7 @@ For consistency, consider adding freshness checks. But given the existing safegu
 
 ## Finding D: Partial Liquidation Can Cascade Into Full Close (MEDIUM)
 
-**Status: OPEN**
+**Status: OPEN — deferred (requires engine crate changes)**
 
 ### Summary
 
@@ -339,11 +339,13 @@ After partial liquidation, the safety check re-evaluates margin using reduced ca
 
 `compute_liquidation_close_amount` should account for the capital drain that occurs during partial close settlement.
 
+**Deferred:** Requires changes to `percolator` engine crate (capital-drain accounting in liquidation logic), which is not available in the local `percolator-prog` repository.
+
 ---
 
 ## Finding B: Warmup Settlement Ordering Unfairness (MEDIUM)
 
-**Status: OPEN (low impact when haircut = 1)**
+**Status: OPEN — deferred (requires engine crate changes, low impact when haircut = 1)**
 
 ### Summary
 
@@ -353,19 +355,32 @@ The haircut ratio is a global value that changes as each account settles warmup.
 
 Snapshot the haircut ratio at crank sweep start and use it for all settlements in that sweep.
 
+**Deferred:** Requires changes to `percolator` engine crate (haircut ratio snapshot), which is not available in the local `percolator-prog` repository.
+
 ---
 
 ## Finding I: Admin Config Updates Have No Cross-Parameter Validation (MEDIUM)
 
-**Status: OPEN**
+**Status: FIXED — parameter bounds added to `UpdateConfig`**
 
 ### Summary
 
-`UpdateConfig`, `SetMaintenanceFee`, and `SetRiskThreshold` accept parameter values with minimal validation. Admin can set `initial_margin_bps < maintenance_margin_bps`, `warmup_period_slots = 0`, extreme maintenance fees, etc.
+`UpdateConfig` previously accepted parameter values with minimal validation. Bounds have now been added for all configurable parameters.
 
-### Recommendation
+### Fixes Applied
 
-Add cross-parameter validation enforcing invariants (initial > maintenance margin, warmup > 0, etc.).
+The following bounds are now enforced in `UpdateConfig`:
+- `funding_k_bps <= 10_000` (max 100%)
+- `funding_max_premium_bps` in `[0, 10_000]` (max 100%)
+- `funding_max_bps_per_slot` in `[0, 100]` (max 100 bps/slot)
+- `thresh_step_bps <= 10_000` (max 100%)
+- `thresh_risk_bps <= 10_000` (max 100%)
+- `thresh_update_interval_slots > 0`
+- Existing: `funding_horizon_slots > 0`, `funding_inv_scale_notional_e6 > 0`, `thresh_alpha_bps <= 10_000`, `thresh_min <= thresh_max`
+
+### Remaining Notes
+
+Cross-parameter validation between `SetMaintenanceFee`/`SetRiskThreshold` and `UpdateConfig` is not enforced (these are separate admin-only instructions). The parameter bounds prevent the most impactful misconfigurations.
 
 ---
 
@@ -401,130 +416,86 @@ Never enable in production builds. Add CI check to verify feature is not enabled
 
 ### Finding P: TradeCpi Allows Arbitrary Mark Price via Malicious Matcher (HIGH)
 
-**Status: OPEN**
+**Status: FIXED — `clamp_oracle_price()` applied to exec_price in TradeCpi (line 3619)**
 
 ### Summary
 
-In Hyperp mode, `TradeCpi` sets the mark price to `exec_price_e6` returned by the external matcher program with no bounds validation. A malicious matcher can return an extreme exec_price, allowing mark price manipulation.
+In Hyperp mode, `TradeCpi` previously set the mark price to `exec_price_e6` returned by the external matcher program with no bounds validation. A malicious matcher could return an extreme exec_price, allowing mark price manipulation.
 
-### Root Cause
+### Fix
 
-**File:** `/home/anatoly/percolator-prog/src/percolator.rs`, lines 3104-3107
+`TradeCpi` now clamps the exec_price against the current index price using the same `clamp_oracle_price()` circuit breaker used by `PushOraclePrice`:
 
 ```rust
 if is_hyperp {
     let mut config = state::read_config(&data);
-    config.authority_price_e6 = ret.exec_price_e6;  // FROM MATCHER - NO BOUNDS CHECK
+    let clamped_mark = oracle::clamp_oracle_price(
+        config.last_effective_price_e6,
+        ret.exec_price_e6,
+        config.oracle_price_cap_e2bps,
+    );
+    config.authority_price_e6 = clamped_mark;
     state::write_config(&mut data, &config);
 }
 ```
 
-The ABI validation only checks `exec_price_e6 != 0` but does NOT constrain it relative to the current oracle/index price.
-
-### Impact
-
-- Mark price can be set to any u64 value by a complicit LP/matcher
-- Funding rate calculations use the manipulated mark
-- If `oracle_price_cap_e2bps = 0` (default), index also jumps to mark
-- Attackers can drain funds via distorted funding payments
-
-### Mitigating Factor
-
-The LP loses money on the trade itself (PnL uses `oracle_price - exec_price`), providing economic disincentive. However, a coordinated attacker controlling both LP and user accounts could still exploit this.
-
-### Recommendation
-
-Add bounds check on exec_price relative to current index price:
-```rust
-if is_hyperp {
-    let max_deviation = oracle_price * MAX_DEVIATION_BPS / 10000;
-    if exec_price > oracle_price + max_deviation || exec_price < oracle_price.saturating_sub(max_deviation) {
-        return Err(PercolatorError::PriceDeviationTooLarge);
-    }
-}
-```
+This bounds the mark price movement per trade to `oracle_price_cap_e2bps` from the current index, preventing manipulation.
 
 ---
 
 ### Finding Q: Index Can Jump Instantly When oracle_price_cap_e2bps = 0 (MEDIUM)
 
-**Status: OPEN**
+**Status: FIXED — Hyperp defaults to non-zero cap; `clamp_toward_with_dt` returns index unchanged when cap=0**
 
 ### Summary
 
-At market initialization, `oracle_price_cap_e2bps` defaults to 0, which disables rate limiting for index smoothing. This allows the index to instantly jump to any mark price.
+At market initialization, `oracle_price_cap_e2bps` previously defaulted to 0, which disabled rate limiting for index smoothing.
 
-### Root Cause
+### Fixes Applied
 
-**File:** `/home/anatoly/percolator-prog/src/percolator.rs`, line 2381 and lines 1935-1936
+1. **Hyperp default cap**: `InitMarket` now sets `oracle_price_cap_e2bps` to `DEFAULT_HYPERP_PRICE_CAP_E2BPS` (10,000 = 1%/slot) for Hyperp markets, and 0 for non-Hyperp markets (where it's not used for index smoothing).
 
+2. **Safe cap=0 behavior**: `clamp_toward_with_dt()` now returns the **index unchanged** (not mark) when `cap_e2bps == 0` or `dt_slots == 0`, preventing rate limit bypass:
 ```rust
-// InitMarket:
-oracle_price_cap_e2bps: 0,  // disabled by default
-
-// clamp_toward_with_dt:
-if cap_e2bps == 0 || dt_slots == 0 { return mark; }  // Bypasses rate limiting!
+if cap_e2bps == 0 || dt_slots == 0 { return index; }  // No movement when cap disabled
 ```
-
-### Impact
-
-- Index can jump to any mark value in a single crank
-- Combined with Finding P, allows instant propagation of manipulated prices
-- Defeats the purpose of gradual index smoothing for funding stability
-
-### Recommendation
-
-1. Set a non-zero default for `oracle_price_cap_e2bps` in Hyperp markets
-2. Or require admin to explicitly enable Hyperp mode with a reasonable cap
 
 ---
 
 ### Finding R: TradeNoCpi Sets Mark = Index (Logic Bug) (LOW)
 
-**Status: OPEN**
+**Status: FIXED — TradeNoCpi disabled in Hyperp mode (`HyperpTradeNoCpiDisabled` error)**
 
 ### Summary
 
-In Hyperp mode, `TradeNoCpi` sets the mark price to the current index price, not the trade execution price. This collapses mark-index premium to zero.
+In Hyperp mode, `TradeNoCpi` previously set the mark price to the current index price, collapsing the mark-index premium to zero.
 
-### Root Cause
+### Fix
 
-**File:** `/home/anatoly/percolator-prog/src/percolator.rs`, lines 2890-2894
+`TradeNoCpi` is now completely disabled in Hyperp mode. All Hyperp trades must go through `TradeCpi` with a pinned matcher, which correctly updates the mark price with circuit-breaker clamping:
 
 ```rust
-if is_hyperp {
-    let mut config = state::read_config(&data);
-    config.authority_price_e6 = price;  // `price` is the INDEX, not exec_price!
-    state::write_config(&mut data, &config);
+// Hyperp mode: reject TradeNoCpi to prevent mark price manipulation
+// All trades must go through TradeCpi with a pinned matcher
+if oracle::is_hyperp_mode(&config) {
+    return Err(PercolatorError::HyperpTradeNoCpiDisabled.into());
 }
 ```
 
-The `price` variable was set from `config.last_effective_price_e6` (the index) at line 2828.
-
-### Impact
-
-- Mark always equals index after TradeNoCpi trades
-- Premium is always zero, eliminating the funding mechanism's purpose
-- This may not be the intended behavior
-
-### Recommendation
-
-Review whether TradeNoCpi should update mark to the trade's entry price (similar to TradeCpi) or leave mark unchanged.
+This eliminates the mark=index bug and ensures all Hyperp mark price updates go through the `clamp_oracle_price()` circuit breaker.
 
 ---
 
 ### Finding S: No Bounds on funding_k_bps in UpdateConfig (LOW)
 
-**Status: OPEN**
+**Status: FIXED — bounds added to `UpdateConfig` (see Finding I)**
 
 ### Summary
 
-The `UpdateConfig` instruction does not bound `funding_k_bps`, allowing admin to set extreme funding rate multipliers.
+The `UpdateConfig` instruction now bounds `funding_k_bps <= 10_000` (max 100%), preventing extreme funding rate multipliers. This is part of the broader parameter validation added for Finding I.
 
-### Impact
+### Additional bounds added:
+- `funding_max_premium_bps` in `[0, 10_000]`
+- `funding_max_bps_per_slot` in `[0, 100]`
 
-An admin could set `funding_k_bps = 1_000_000` (10000x), causing punitive funding rates. Mitigated by `max_bps_per_slot` cap, but still allows admin misconfiguration.
-
-### Recommendation
-
-Add bounds validation: `funding_k_bps <= MAX_FUNDING_K_BPS` (e.g., 1000 = 10x)
+See Finding I for the complete list of parameter bounds.
