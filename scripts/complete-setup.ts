@@ -34,7 +34,7 @@ function buildIx(p: { programId: PublicKey; keys: any[]; data: Buffer }): Transa
 }
 
 async function main() {
-  const conn = new Connection("https://api.devnet.solana.com", "confirmed");
+  const conn = new Connection(process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com", "confirmed");
   const payer = Keypair.fromSecretKey(
     Uint8Array.from(JSON.parse(fs.readFileSync(os.homedir() + "/.config/solana/id.json", "utf-8")))
   );

@@ -40,7 +40,7 @@ async function runT19Tests(): Promise<void> {
 
   const harness = new TestHarness();
   const hermesClient = new HermesClient(HERMES_ENDPOINT);
-  const connection = new Connection("https://api.devnet.solana.com", "confirmed");
+  const connection = new Connection(process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com", "confirmed");
 
   // -------------------------------------------------------------------------
   // T19.1: Fetch live price from Hermes

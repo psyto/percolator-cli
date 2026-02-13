@@ -8,7 +8,7 @@ import * as fs from 'fs';
 const marketInfo = JSON.parse(fs.readFileSync("devnet-market.json", "utf-8"));
 const SLAB = new PublicKey(process.argv[2] || marketInfo.slab);
 const OWNER = process.argv[3] ? new PublicKey(process.argv[3]) : null;
-const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
+const connection = new Connection(process.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com', 'confirmed');
 
 async function main() {
   if (!process.argv[3]) {

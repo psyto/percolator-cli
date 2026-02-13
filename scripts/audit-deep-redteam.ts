@@ -55,7 +55,7 @@ const MATCHER_PROGRAM = new PublicKey(marketInfo.matcherProgramId);
 const MATCHER_CTX = new PublicKey(marketInfo.lp.matcherContext);
 const LP_PDA = new PublicKey(marketInfo.lp.pda);
 
-const conn = new Connection("https://api.devnet.solana.com", "confirmed");
+const conn = new Connection(process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com", "confirmed");
 const payer = Keypair.fromSecretKey(
   new Uint8Array(JSON.parse(fs.readFileSync(process.env.HOME + "/.config/solana/id.json", "utf-8")))
 );

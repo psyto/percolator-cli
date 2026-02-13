@@ -40,7 +40,7 @@ const ORACLE = new PublicKey(marketInfo.oracle);
 const PROGRAM_ID = new PublicKey(marketInfo.programId);
 const VAULT = new PublicKey(marketInfo.vault);
 
-const conn = new Connection("https://api.devnet.solana.com", "confirmed");
+const conn = new Connection(process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com", "confirmed");
 const payer = Keypair.fromSecretKey(
   Uint8Array.from(JSON.parse(fs.readFileSync(process.env.HOME + "/.config/solana/id.json", "utf-8")))
 );

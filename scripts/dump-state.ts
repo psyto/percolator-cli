@@ -8,7 +8,7 @@ import * as fs from 'fs';
 const marketInfo = JSON.parse(fs.readFileSync('devnet-market.json', 'utf-8'));
 const SLAB = new PublicKey(marketInfo.slab);
 const ORACLE = new PublicKey(marketInfo.oracle);
-const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
+const connection = new Connection(process.env.SOLANA_RPC_URL || 'https://api.devnet.solana.com', 'confirmed');
 
 // Helper to convert BigInt to string for JSON
 function toJSON(obj: any): any {
